@@ -8,44 +8,13 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.WindowsAzure.Storage;
 using Microsoft.WindowsAzure.Storage.Table;
+using TableStress.Command;
 
-namespace ConsoleApplication13
+namespace TableStress
 {
 
     class Program
     {
-        async static Task<Tuple<long,long>> Insert(CloudTable table, long n)
-        {
-            var partitionKey = string.Format("{0:D12}", n % 100);
-            var e = new EntityNk(partitionKey, Guid.NewGuid().ToString() + "-" + n.ToString("D12"));
-            var tableOperation = TableOperation.Insert(e);
-
-            var sw = Stopwatch.StartNew();
-            var result = await table.ExecuteAsync(tableOperation);
-
-            return new Tuple<long,long>(DateTime.UtcNow.Ticks, sw.ElapsedTicks);
-        }
-
-        static IList<Tuple<double, double>> Run(CloudTable table, int numberOfProcess)
-        {
-            var start = DateTime.UtcNow.Ticks;
-
-            var tasks = Enumerable.Range(0, numberOfProcess).Select(n =>
-            {
-                var e = Insert(table, n);
-                return e;
-
-            }).ToArray();
-
-            Task.WaitAll(tasks.ToArray());
-
-            var result = tasks.Select(t => new Tuple<double, double>(
-                (double)(t.Result.Item1 - start) / TimeSpan.TicksPerMillisecond,
-                (double)t.Result.Item2 / TimeSpan.TicksPerMillisecond)).ToArray();
-
-            return result;
-        }
-
         static void Main(string[] args)
         {
             ServicePointManager.DefaultConnectionLimit = Environment.ProcessorCount * 12 * 4 * 10;
@@ -67,8 +36,9 @@ namespace ConsoleApplication13
 
                 {
                     EntityNk.DataSize = i;
+                    var cmd = new Insert();
 
-                    var result = Run(tableClient, numberOfProcess);
+                    var result = cmd.Run(tableClient, numberOfProcess);
 
                     WriteReport(i, result);
                 }
@@ -103,18 +73,19 @@ namespace ConsoleApplication13
             Console.WriteLine("## {0}\t{1}\t{2}\t{3}\t{4}\t{5}\t{6}\t{7}\t{8}");
 
             // 全件 dump
-            Console.WriteLine("# ElapsedTime(ms) ExecutionTime(ms)");
+            Console.WriteLine("# EntitySize(KB) ElapsedTime(ms) ExecutionTime(ms)");
             foreach (var t in sorted)
-                Console.WriteLine("{0} {1}", t.Item1, t.Item2);
+                Console.WriteLine("{0} {1} {2}", i, t.Item1, t.Item2);
 
             Console.Write("\n\n");
-
+#if HISTOGRAM
             // ms で四捨五入して集計
-            Console.WriteLine("# ExecutionTime(ms) NumberOfCounts");
+            Console.WriteLine("# EntitySize(KB) ExecutionTime(ms) NumberOfCounts");
             foreach (var t in result.GroupBy(t => Math.Round(t.Item2)).OrderBy(t => t.Key))
-                Console.WriteLine("{0} {1}", t.Key, t.Count());
+                Console.WriteLine("{0} {1} {2}", i, t.Key, t.Count());
 
             Console.Write("\n\n");
+#endif
         }
     }
 
