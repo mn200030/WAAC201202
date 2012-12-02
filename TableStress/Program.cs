@@ -35,6 +35,8 @@ namespace TableStress
 //            var size = new[] { 512, 1024, 2 * 1024, 4 * 1024, 8 * 1024, 16 * 1024, 32 * 1024, 64 * 1024, 128 * 1024, 256 * 1024};
             var size = new[] { 1024 };
 
+            var cmd = new Insert();
+
             foreach (var s in size) 
             {
                 // GC & make stable
@@ -45,7 +47,6 @@ namespace TableStress
                     Console.Error.Write("{0} ", s);
 
                     EntityNk.DataSize = s;
-                    var cmd = new Insert();
 
                     var result = cmd.Run(tableClient, numberOfProcess, numberOfThread);
 
