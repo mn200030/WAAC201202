@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -6,42 +7,86 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.WindowsAzure.Storage.Table;
 
-namespace Command
+namespace TableStress.Command
 {
     public class Insert : CommandBase, ICommand
     {
-        async Task<Tuple<long, long>> DoInsert(CloudTable table, long n)
+        private static EntityNk EntityGenerator(long n)
         {
-            var partitionKey = string.Format("{0:D12}", n % 100);
+#if SINGLE_PARTITION
+            var partitionKey = "000000000000";
+#else
+            var partitionKey =  string.Format("{0:D12}", n % 10);
+#endif
             var e = new EntityNk(partitionKey, Guid.NewGuid().ToString() + "-" + n.ToString("D12"));
-            var tableOperation = TableOperation.Insert(e);
-
-            var sw = Stopwatch.StartNew();
-            var result = await table.ExecuteAsync(tableOperation);
-
-            return new Tuple<long, long>(DateTime.UtcNow.Ticks, sw.ElapsedTicks);
+            return e;
         }
 
-        public IList<Tuple<double, double>> Run(CloudTable table, int numberOfProcess)
+        async Task<CommandResult> DoInsert(CloudTable table, long n, Func<long, EntityNk> entityFactory)
         {
-            var start = DateTime.UtcNow.Ticks;
+            var e = entityFactory(n);
 
-            var tasks = Enumerable.Range(0, numberOfProcess).Select(n =>
+#if INSERT_OR_REPLACE
+            var tableOperation = TableOperation.InsertOrReplace(e);
+#else
+            var tableOperation = TableOperation.Insert(e);
+#endif
+            var cresult = new CommandResult { Start = DateTime.UtcNow.Ticks };
+            var cbt = 0L;
+            var context = GetOperationContext((t) => cbt = t);
+            try
             {
-                var e = DoInsert(table, n);
+                var result = await table.ExecuteAsync(tableOperation, operationContext: context);
+                cresult.Elapsed = cbt;
+            }
+            catch (Exception ex)
+            {
+                cresult.Elapsed = -1;
+                Console.Error.WriteLine("Error DoInsert {0} {1}", n, ex.ToString());
+            }
+            return cresult;
+        }
+
+        private IList<CommandResult> Run(CloudTable table, Tuple<int, int> range)
+        {
+            Console.Error.WriteLine("start {0}-{1}", range.Item1, range.Item2);
+            var tasks = Enumerable.Range(range.Item1, range.Item2).Select(n =>
+            {
+                var e = DoInsert(table, n, EntityGenerator);
                 return e;
 
             }).ToArray();
 
-            Task.WaitAll(tasks.ToArray());
+            Task.WaitAll(tasks);
 
-            var result = tasks.Select(t => new Tuple<double, double>(
-                (double)(t.Result.Item1 - start) / TimeSpan.TicksPerMillisecond,
-                (double)t.Result.Item2 / TimeSpan.TicksPerMillisecond)).ToArray();
+            var result = tasks.Select(t => t.Result).ToArray();
 
             return result;
         }
 
+        public IEnumerable<CommandResult> Run(CloudTable table, int numberOfProcess, int parallelism = 0)
+        {
+            if (parallelism == 0) parallelism = System.Environment.ProcessorCount * 3;
 
+            if(parallelism == 1)
+                return Run(table, new Tuple<int, int>(0, numberOfProcess));
+
+            var sizeOfWorkload = numberOfProcess / parallelism + (numberOfProcess % parallelism == 0 ? 0 : 1);
+
+            var chunker = Partitioner.Create(0, numberOfProcess, sizeOfWorkload);
+
+            var results = new ConcurrentQueue<IList<CommandResult>>();
+
+            // Loop over the workload partitions in parallel.
+            Parallel.ForEach(chunker,
+                new ParallelOptions { MaxDegreeOfParallelism = parallelism },
+                (range) => results.Enqueue(Run(table, range))
+                );
+
+            return results.Aggregate<IEnumerable<CommandResult>>((f, s) =>
+            {
+                return f.Concat(s).AsEnumerable();
+            });
+        }
     }
 }
