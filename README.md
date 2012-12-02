@@ -1,105 +1,168 @@
-= WAAC 2012
-[2012-12-02 10:55]
-# Windows Azure Advent Calender 2日目
-今年も早いもので、あっという間に12月になりました。個人的には、Azure Storageのパフォーマンスの向上と新しくなったWindows Azure Storage 2.0が注目です。
+# Windows Azure Advent Calendar 2012 2日目
+今年も早いもので、あっという間に12月になりました。個人的なAzure今年の目玉は、Azure Storageのパフォーマンスの向上(Gen2)と新しくなったWindows Azure Storage 2.0です。
+いろいろと新機能満載なAzureですが、ストレージ関連はクラウドの足回りとして地味に改善されているようです。
 
 # Azure Storageのパフォーマンスの向上
 2012/6/7 以降に作成されたストレージアカウントでは、下記のようにパフォーマンスターゲットが引き上げられました。Gen 2と呼ばれているようです。
 
-Azure Table 1Kエンティティの場合
-単一パーテーション  500 エンティティ/秒 ->   2,000 エンティティ/秒
-複数パーテーション 5,000 エンティティ/秒 -> 20,000 エンティティ/秒 (156Mbps)
+* Azure Table 1Kエンティティの場合秒間のトランザクションベースだと4倍程度になっています。
 
-http://satonaoki.wordpress.com/2012/11/03/windows-azure%E3%81%AE%E3%83%95%E3%83%A9%E3%83%83%E3%83%88-%E3%83%8D%E3%83%83%E3%83%88%E3%83%AF%E3%83%BC%E3%82%AF-%E3%82%B9%E3%83%88%E3%83%AC%E3%83%BC%E3%82%B8%E3%81%A82012%E5%B9%B4%E7%89%88%E3%82%B9/
+1. 単一パーテーション  500 エンティティ/秒 ->   2,000 エンティティ/秒 (15Mbps)
+
+2. 複数パーテーション 5,000 エンティティ/秒 -> 20,000 エンティティ/秒 (156Mbps)
+
+参照：[Windows Azureのフラット ネットワーク ストレージと2012年版スケーラビリティ ターゲット](http://satonaoki.wordpress.com/2012/11/03/windows-azure%E3%81%AE%E3%83%95%E3%83%A9%E3%83%83%E3%83%88-%E3%83%8D%E3%83%83%E3%83%88%E3%83%AF%E3%83%BC%E3%82%AF-%E3%82%B9%E3%83%88%E3%83%AC%E3%83%BC%E3%82%B8%E3%81%A82012%E5%B9%B4%E7%89%88%E3%82%B9/)
 
 
 # 確認しよう
 早くなったということなので、Azure Storage Client 2.0を使ってGen2のパフォーマンスを確認します。ざっとソースを見た感じだと、従来のコードに比べてシンプルになって速度も期待できそうです。
 
-前記の記事によると、エンティティが1KByteで、複数パーテーションの場合、20,000 エンティティ/秒と言うことです。これだと、単純計算でも156Mbpsのネットワーク速度が必要です。インスタンスは、Mediumだと200 Mbpsの制限がありぎりぎりなのでLarge(400 Mbps)を使うことにします。
+前記のGen2の記事によると、エンティティが1KByteで、単一パーテーションの場合、2,000 エンティティ/秒と言うことです。このためには秒間2000オブジェクトを計測時間の間は作りづけないといけないのでCPUやGCがボトルネックになりがちです。今回は余裕を見てLargeを使うことにしました。
 
-LargeだとCoreが8つあるので、CPU的にも足りそうですが、GCをなるべく減らすためにエンティティおデータ部分をCache（共有）します。1KByteぐらいだとあまり効果がないかもしれませんが念のためです。
+Largeだとメモリ7GByte、coreが8つ、ネットワーク400Mbpsというスペックなので気にしなくても良いかと思ったのですが、GCをなるべく減らすためにエンティティのデータ部分をCache（共有）します。1KByteぐらいだとあまり効果が無いかもしれませんが。
 
 
 ```C#
-Code
+    public class EntityNk : TableEntity
+    {
+        const int MAX_PROPERTY = 8; 
+        private static List<byte[]> dataCache;
+        private static int dataSize = 1;
+
+        static EntityNk()
+        {
+            Clear();
+        }
+
+        public EntityNk(string partitionKey, string rowKey)
+        {
+            this.PartitionKey = partitionKey;
+            this.RowKey = rowKey;
+            this.Data0 = dataCache[0];
+            this.Data1 = dataCache[1];
+            this.Data2 = dataCache[2];
+            this.Data3 = dataCache[3];
+            this.Data4 = dataCache[4];
+            this.Data5 = dataCache[5];
+            this.Data6 = dataCache[6];
+            this.Data7 = dataCache[7];
+        }
+
+        public EntityNk() { }
+
+        public byte[] Data0 { get; set; }
+        public byte[] Data1 { get; set; }
+        public byte[] Data2 { get; set; }
+        public byte[] Data3 { get; set; }
+        public byte[] Data4 { get; set; }
+        public byte[] Data5 { get; set; }
+        public byte[] Data6 { get; set; }
+        public byte[] Data7 { get; set; }
+
+        public static int DataSize
+        {
+            set
+            {
+                if (value != dataSize)
+                {
+                    Clear();
+
+                    dataSize = value;
+                    var x = dataSize / MAX_PROPERTY;
+                    var y = dataSize % MAX_PROPERTY;
+
+                    for (var i = 0; i < dataCache.Count(); i++)
+                    {
+                        dataCache[i] = GetRandomByte(x);
+                    }
+
+                    if (y != 0)
+                        dataCache[x] = GetRandomByte(y);
+                }
+            }
+        }
+
+... 省略 ...
+
+    }
+
 ```
 
-Threadを上げる数を減らして並列性を上げるために非同期呼び出しを使います。.NET 4.5 から await/async が使えるので割合簡単に非同期コードが記述できるのですが少し手間がかかります。
+さらに、Threadを上げる数を減らして並列性を上げるために非同期呼び出しを使います。.NET 4.5 から await/async が使えるので割合簡単に非同期コードが記述できるのですが、少し手間がかかりました。
 
 なんと残念ながら、Windows Azure Storage 2.0になっても APM (Asynchronous Programming Model) のメソッドしか用意されておらず、 await で使えるTaskAsyncの形式がサポートされていません。仕方がないので、自分で拡張メソッドを書きますが、引数が多くて intellisense があっても混乱します。泣く泣く、コンパイルエラーで期待されているシグニチャーをみながら書きました。コードとしてはこんな感じで簡単です。
 
 ```C#
-Code
+
+    public static class CloudTableExtensions
+    {
+        public static Task<TableResult> ExecuteAsync(this CloudTable cloudTable, TableOperation operation, TableRequestOptions requestOptions = null, OperationContext operationContext = null, object state = null)
+        {
+            return Task.Factory.FromAsync<TableOperation, TableRequestOptions, OperationContext, TableResult>(
+                cloudTable.BeginExecute, cloudTable.EndExecute, operation, requestOptions, operationContext, state);
+        }
+    }
+
 ```
 
 この辺りは、下記のサイトが詳しくお勧めです。
 ++C++; // 未確認飛行C 非同期処理
 http://ufcpp.net/study/csharp/sp5_async.html#async
 
-このコードを動かしてみたら、「単一スレッド＋非同期の組み合わせだとおおよそ、２から３程度のコネクションしか作成されない」ｌことに気が付きました。場合によっては、5ぐらいまで上がることもあるようですが、どうしてこうなるのか不思議です。
+このコードを動かしてみたら、「単一スレッド＋非同期の組み合わせだと、おおよそ２から３程度のコネクションしか作成されない」ことに気が付きました。場合によっては、5ぐらいまで上がることもあるようですが、どうしてこうなるのか不思議です。
 
-そのため、今回のコードは複数スレッド（Task）をあげて、それぞれのスレッド内で非同期呼び出しを使って処理を行うようになっています。
+今回のコードは複数スレッド（Task）をあげて、それぞれのスレッド内で非同期呼び出しを使って処理を行うようになっています。
 
-それでも、1000 
-
-Min.	1st Qu.	Median	Mean	3rd Qu.	Max.	90%	95%	99%
-4.561	9.178	12.530	32.580	15.790	4010.000	22.20367	28.62459	950.17083
-> 
-> 
+さらに、上限に挑戦するためにEntity Group Transactionを使います。TableBatchOperation のインスタンスを作って操作を追加していってCloudTableのExecuteBatchAsync()で実行します。この辺りは以前の使い方とだいぶ違っています。
+今回は時間を測っているいるだけですが、resultにはEntityのリストが帰ってきて、それぞれにtimestampとetagがセットされています。
 
 
-単一パーテーションで試します
+```C#
+            
+            var batchOperation = new TableBatchOperation();
+
+            foreach (var e in entityFactory(n))
+            {
+                batchOperation.Insert(e);
+            }
+
+            var cresult = new CommandResult { Start = DateTime.UtcNow.Ticks };
+            var cbt = 0L;
+            var context = GetOperationContext((t) => cbt = t);
+            try
+            {
+                var results = await table.ExecuteBatchAsync(batchOperation, operationContext: context);
+                cresult.Elapsed = cbt;
+            }
+            catch (Exception ex)
+            {
+                cresult.Elapsed = -1;
+                Console.Error.WriteLine("Error DoInsert {0} {1}", n, ex.ToString());
+            }
+            return cresult;
+ 
+```
+
+# 結果
+いくつかパラメータを調整して実行し、スロットリングが起きる前後を探して4回測定した。ピークe/sは、もっとも時間当たりのエンティティの挿入数が大きかった時の数字で秒間のエンティティ挿入数を表している。起動するプロセス数で負荷を調整している。
+失敗が無かったケースでも6,684、 6,932 エンティティ/秒で処理できているので、Gen2で挙げられているパフォーマンスターゲットは十分達成できているようだ。
+
+測定時間の、Table Metricsを見るとThrottlingErrorと同時に、ClientTimeoutErrorも出ているのでプロセスを3つ上げているケースではクライアントの負荷が高くなり過ぎている可能性が高い。
+
+* 条件：エンティティサイズ 1KByte、単一パーテーション、スレッド数12、バッチサイズ100
+
+<pre>
+プロセス数	最少	中央値	平均	最大	90%点 	95%点	99%点	ピークe/s	成功数	失敗数
+-----------------------------------------------------------------------------------------------------------------------
+2 	97.27 	166.6 	258.0 	14,800 	359.578 	472.373 	1,106.282 	6,684 	40,000 	0 
+2 	94.17 	260.5 	333.7 	5,320 	564.774 	723.272 	1,339.027 	6,932 	40,000 	0 
+3 	90.13 	174.8 	734.1 	21,270 	1,621.490 	1,845.903 	3,434.256 	7,218 	59,377 	623 
+3 	90.35 	341.6 	610.1 	27,490 	1,064.593 	1,380.415 	4,431.789 	8,005 	59,740 	260 
+</pre>
 
 
-簡単に測定してみます。お題目通りのパフォーマンスが出ておりレイテンシーも10ms未満の数字が出ました。
+# 最後に
+このレポジトリに計測に使ったコードをいれてありますので見てみてください。
+12/2のはずでしたが、だいぶ遅くなってしました。データの解析に慣れない「R」を使ったのですが、どうも慣れなくて手間取ってしまいました。最初はRで出した図なども入れたいと思ったのですが、軸や凡例の設定がうまくできずに時間切れで断念してしまいました。
 
 
-
-
-
-
-
-Image	PID	Local Address	Local Port	Remote Address	Remote Port	Packet Loss (%)	Latency (ms)
-TableStress.exe	3132	10.79.106.185	61973	168.62.0.16	80	0	15
-TableStress.exe	3132	10.79.106.185	61974	168.62.0.16	80	0	15
-TableStress.exe	3132	10.79.106.185	61952	168.62.0.16	80	0	13
-TableStress.exe	3132	10.79.106.185	61980	168.62.0.16	80	0	12
-TableStress.exe	3132	10.79.106.185	61971	168.62.0.16	80	0	12
-TableStress.exe	3132	10.79.106.185	61967	168.62.0.16	80	0	11
-TableStress.exe	3132	10.79.106.185	61951	168.62.0.16	80	0	11
-TableStress.exe	3132	10.79.106.185	61969	168.62.0.16	80	0	10
-TableStress.exe	3132	10.79.106.185	61985	168.62.0.16	80	0	9
-TableStress.exe	3132	10.79.106.185	61968	168.62.0.16	80	0	9
-TableStress.exe	3132	10.79.106.185	61972	168.62.0.16	80	0	8
-TableStress.exe	3132	10.79.106.185	61966	168.62.0.16	80	0	7
-TableStress.exe	3132	10.79.106.185	61964	168.62.0.16	80	0	7
-TableStress.exe	3132	10.79.106.185	61965	168.62.0.16	80	0	6
-TableStress.exe	3132	10.79.106.185	61963	168.62.0.16	80	0	6
-TableStress.exe	3132	10.79.106.185	61983	168.62.0.16	80	0	6
-TableStress.exe	3132	10.79.106.185	61982	168.62.0.16	80	0	6
-TableStress.exe	3132	10.79.106.185	61981	168.62.0.16	80	0	6
-TableStress.exe	3132	10.79.106.185	61984	168.62.0.16	80	0	6
-TableStress.exe	3132	10.79.106.185	61960	168.62.0.16	80	0	6
-TableStress.exe	3132	10.79.106.185	61956	168.62.0.16	80	0	6
-TableStress.exe	3132	10.79.106.185	61954	168.62.0.16	80	0	5
-TableStress.exe	3132	10.79.106.185	61958	168.62.0.16	80	0	5
-TableStress.exe	3132	10.79.106.185	61959	168.62.0.16	80	0	5
-TableStress.exe	3132	10.79.106.185	61955	168.62.0.16	80	0	5
-TableStress.exe	3132	10.79.106.185	61950	168.62.0.16	80	0	5
-TableStress.exe	3132	10.79.106.185	61953	168.62.0.16	80	0	4
-TableStress.exe	3132	10.79.106.185	61961	168.62.0.16	80	0	4
-TableStress.exe	3132	10.79.106.185	61957	168.62.0.16	80	0	3
-TableStress.exe	3132	10.79.106.185	61970	168.62.0.16	80	0	3
-TableStress.exe	3132	10.79.106.185	61949	168.62.0.16	80	0	2
-TableStress.exe	3132	10.79.106.185	61962	168.62.0.16	80	0	0
-TableStress.exe	3132	10.79.106.185	61977	168.62.0.16	80	0	0
-TableStress.exe	3132	10.79.106.185	61976	168.62.0.16	80	0	0
-TableStress.exe	3132	10.79.106.185	61978	168.62.0.16	80	0	0
-TableStress.exe	3132	10.79.106.185	61979	168.62.0.16	80	0	0
-TableStress.exe	3132	10.79.106.185	61975	168.62.0.16	80	0	0
-TableStress.exe	3132	10.79.106.185	61988	168.62.0.16	80	-	-
-TableStress.exe	3132	10.79.106.185	61987	168.62.0.16	80	-	-
-TableStress.exe	3132	10.79.106.185	61986	168.62.0.16	80	-	- 
-
-(/ 100000 107671.9539 1000)

@@ -4,11 +4,10 @@ using System.Configuration;
 using System.Diagnostics;
 using System.Linq;
 using System.Net;
-using System.Security.Cryptography;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.WindowsAzure.Storage;
+using Microsoft.WindowsAzure.Storage.RetryPolicies;
 using Microsoft.WindowsAzure.Storage.Table;
 using TableStress.Command;
 
@@ -27,15 +26,25 @@ namespace TableStress
             
             var numberOfProcess = args.Length > 0 ? int.Parse(args[0]) : 10;
             var numberOfThread = args.Length > 1 ? int.Parse(args[1]) : 1;
+            var tableName = args.Length > 2 ? args[2] : "TestTable" + Guid.NewGuid().ToString("N");
 
-            var tableClient = storageAccount.CreateCloudTableClient().GetTableReference("TestTable"+Guid.NewGuid().ToString("N"));
+            var tableClient = storageAccount.CreateCloudTableClient();
+            tableClient.RetryPolicy = new NoRetry(); // 時間計測したいのでRetryはエラーにする
 
-            tableClient.CreateIfNotExists();
+            var cloudTable = tableClient.GetTableReference(tableName);
+
+            Console.Error.WriteLine(cloudTable.Name);
+
+            cloudTable.CreateIfNotExists();
 
 //            var size = new[] { 512, 1024, 2 * 1024, 4 * 1024, 8 * 1024, 16 * 1024, 32 * 1024, 64 * 1024, 128 * 1024, 256 * 1024};
             var size = new[] { 1024 };
 
+#if INSERT_BATCH
+            var cmd = new InsertBatch();
+#else
             var cmd = new Insert();
+#endif
 
             foreach (var s in size) 
             {
@@ -48,7 +57,7 @@ namespace TableStress
 
                     EntityNk.DataSize = s;
 
-                    var result = cmd.Run(tableClient, numberOfProcess, numberOfThread);
+                    var result = cmd.Run(cloudTable, numberOfProcess, numberOfThread);
 
                     sw.Stop();
                     WriteReport(s, result);
@@ -68,12 +77,11 @@ namespace TableStress
 
             // 開始処理時間でソート
             var sorted = result.OrderBy(t => t.Start).ToArray();
-            var begin = sorted[0].Start;
 
             // 全件 dump
             Console.WriteLine("# EntitySize(KB) ElapsedTime(ms) ExecutionTime(ms)");
             foreach (var t in sorted)
-                Console.WriteLine("{0} {1} {2}", i, (double)(t.Start - begin) / TimeSpan.TicksPerMillisecond, (double)(t.Elapsed) / TimeSpan.TicksPerMillisecond);
+                Console.WriteLine("{0} {1} {2}", i, (double)t.Start / TimeSpan.TicksPerMillisecond, (double)(t.Elapsed) / TimeSpan.TicksPerMillisecond);
 
             Console.Write("\n\n");
         }
@@ -85,6 +93,12 @@ namespace TableStress
         {
             return Task.Factory.FromAsync<TableOperation, TableRequestOptions, OperationContext, TableResult>(
                 cloudTable.BeginExecute, cloudTable.EndExecute, operation, requestOptions, operationContext, state);
+        }
+
+        public static Task<IList<TableResult>> ExecuteBatchAsync(this CloudTable cloudTable, TableBatchOperation batch, TableRequestOptions requestOptions = null, OperationContext operationContext = null, object state = null)
+        {
+            return Task.Factory.FromAsync<TableBatchOperation, TableRequestOptions, OperationContext, IList<TableResult>>(
+                cloudTable.BeginExecuteBatch, cloudTable.EndExecuteBatch, batch, requestOptions, operationContext, state);
         }
     }
 }

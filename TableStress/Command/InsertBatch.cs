@@ -7,34 +7,41 @@ using Microsoft.WindowsAzure.Storage.Table;
 
 namespace TableStress.Command
 {
-    public class Insert : CommandBase, ICommand
+    public class InsertBatch : CommandBase, ICommand
     {
-        private static EntityNk EntityGenerator(long n)
+        private static EntityNk[] EntityGenerator(long n)
         {
 #if SINGLE_PARTITION
             var partitionKey = "000000000000";
 #else
             var partitionKey =  string.Format("{0:D12}", n % 10);
 #endif
-            var e = new EntityNk(partitionKey, Guid.NewGuid().ToString() + "-" + n.ToString("D12"));
-            return e;
+            var result = new EntityNk[100];
+
+            for (var i = 0; i < 100; i++)
+            {
+                var e = new EntityNk(partitionKey, Guid.NewGuid().ToString() + "-" + n.ToString("D12"));
+                result[i] = e;
+            }
+            return result;
         }
 
-        async Task<CommandResult> DoInsert(CloudTable table, long n, Func<long, EntityNk> entityFactory)
+        async Task<CommandResult> DoInsert(CloudTable table, long n, Func<long, EntityNk[]> entityFactory)
         {
-            var e = entityFactory(n);
+            
+            var batchOperation = new TableBatchOperation();
 
-#if INSERT_OR_REPLACE
-            var tableOperation = TableOperation.InsertOrReplace(e);
-#else
-            var tableOperation = TableOperation.Insert(e);
-#endif
+            foreach (var e in entityFactory(n))
+            {
+                batchOperation.Insert(e);
+            }
+
             var cresult = new CommandResult { Start = DateTime.UtcNow.Ticks };
             var cbt = 0L;
             var context = GetOperationContext((t) => cbt = t);
             try
             {
-                var result = await table.ExecuteAsync(tableOperation, operationContext: context);
+                var results = await table.ExecuteBatchAsync(batchOperation, operationContext: context);
                 cresult.Elapsed = cbt;
             }
             catch (Exception ex)
