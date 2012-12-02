@@ -110,3 +110,6 @@ packages/
 
 # for emacs
 *~
+
+# for R
+R/

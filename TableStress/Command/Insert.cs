@@ -50,7 +50,7 @@ namespace TableStress.Command
         private IList<CommandResult> Run(CloudTable table, Tuple<int, int> range)
         {
             Console.Error.WriteLine("start {0}-{1}", range.Item1, range.Item2);
-            var tasks = Enumerable.Range(range.Item1, range.Item2).Select(n =>
+            var tasks = Enumerable.Range(range.Item1, range.Item2 - range.Item1).Select(n =>
             {
                 var e = DoInsert(table, n, EntityGenerator);
                 return e;
@@ -83,10 +83,17 @@ namespace TableStress.Command
                 (range) => results.Enqueue(Run(table, range))
                 );
 
+            var ret = new List<CommandResult>();
+
+            foreach (var l in results) ret.AddRange(l);
+
+            return ret;
+#if BUG
             return results.Aggregate<IEnumerable<CommandResult>>((f, s) =>
             {
                 return f.Concat(s).AsEnumerable();
             });
+#endif
         }
     }
 }
